@@ -1,25 +1,6 @@
-# MIT License
-#
-# Copyright (c) 2025
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-
+# TAG=0xD000;MODULE=BACKEND_MAIN
+# CRC32=0x00000000; BITS=00000000000000000000000000000000
+# DESCRIPTION: FastAPI app wiring data connector, signals, and websockets; supports live candles and config.
 from __future__ import annotations
 import asyncio
 import time
@@ -31,7 +12,7 @@ from pydantic import BaseModel
 
 from .db import init_db, save_api_key, get_api_key
 from .signal_engine import SignalEngine, BroadcastHub
-from .data_connector import DataConnector
+from .data_connector import DataConnector, Candle
 from .indicators import rsi
 from .divergence import detect_divergence
 
@@ -52,6 +33,11 @@ class ApiKeyIn(BaseModel):
     api_key: str
 
 
+class StreamConfig(BaseModel):
+    symbol: str
+    timeframe: str = "1min"
+
+
 @app.get("/api/ping")
 def api_ping() -> Dict[str, Any]:
     return {"ok": True, "ts": int(time.time() * 1000)}
@@ -70,7 +56,28 @@ def api_key_get() -> Dict[str, Any]:
 
 
 hub = BroadcastHub()
-engine = SignalEngine(symbol="EUR/USD", timeframe="1m", hub=hub)
+_stream_cfg = StreamConfig(symbol="EUR/USD", timeframe="1min")
+engine = SignalEngine(symbol=_stream_cfg.symbol, timeframe=_stream_cfg.timeframe, hub=hub)
+_dc: Optional[DataConnector] = None
+_dc_lock = asyncio.Lock()
+
+
+async def _restart_connector(symbol: str, timeframe: str) -> None:
+    global _dc, engine, _stream_cfg
+    async with _dc_lock:
+        if _dc is not None:
+            await _dc.stop()
+        _stream_cfg = StreamConfig(symbol=symbol, timeframe=timeframe)
+        engine = SignalEngine(symbol=_stream_cfg.symbol, timeframe=_stream_cfg.timeframe, hub=hub)
+        simulate = not bool(get_api_key("twelve_data_api_key"))
+        _dc = DataConnector(symbol=_stream_cfg.symbol, timeframe=_stream_cfg.timeframe, simulate=simulate)
+        await _dc.start()
+
+
+@app.post("/api/stream/config")
+async def set_stream_config(cfg: StreamConfig) -> Dict[str, Any]:
+    await _restart_connector(cfg.symbol, cfg.timeframe)
+    return {"ok": True, "symbol": cfg.symbol, "timeframe": cfg.timeframe}
 
 
 @app.websocket("/ws/ping")
@@ -95,24 +102,35 @@ async def ws_stream(ws: WebSocket) -> None:
         await hub.unsubscribe(q)
 
 
-# Background task: simple pipeline using RSI to check divergences on simulated data if no key
 _prices: List[float] = []
 _indicator: List[Optional[float]] = []
 
 
 async def background_pipeline() -> None:
-    dc = DataConnector(symbol="EUR/USD", timeframe="1min", simulate=True)
-    await dc.start()
-    async for c in dc.candles():
+    await _restart_connector(_stream_cfg.symbol, _stream_cfg.timeframe)
+    assert _dc is not None
+    async for c in _dc.candles():
+        # Broadcast candle for live chart
+        await hub.broadcast({
+            "event": "candle",
+            "symbol": _stream_cfg.symbol,
+            "tf": _stream_cfg.timeframe,
+            "ts": c.ts,
+            "open": c.open,
+            "high": c.high,
+            "low": c.low,
+            "close": c.close,
+            "volume": c.volume,
+        })
+        # Update series for divergence signals using RSI
         _prices.append(float(c.close))
         while len(_indicator) < len(_prices):
             _indicator.append(None)
-        if len(_prices) >= 2:
-            r = rsi(_prices, 14)
-            _indicator[:] = r
-            dtype, score, sig = detect_divergence(_prices, _indicator, lookback=5)
-            if dtype != "NoDivergence":
-                await engine.handle_divergence(dtype, score, sig)
+        r = rsi(_prices, 14)
+        _indicator[:] = r
+        dtype, score, sig = detect_divergence(_prices, _indicator, lookback=5)
+        if dtype != "NoDivergence":
+            await engine.handle_divergence(dtype, score, sig)
 
 
 @app.on_event("startup")

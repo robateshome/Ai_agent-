@@ -1,5 +1,5 @@
 <!-- TAG=0xD606;MODULE=FRONTEND -->
-<!-- CRC32=0xF5B5C3A6; BITS=11110101101101011100001110100110 -->
+<!-- CRC32=0xDA56DB86; BITS=11011010010101101101101110000110 -->
 <!-- DESCRIPTION: Single-page UI using Tailwind + lightweight-charts from CDN.
   Must connect to backend WS, render candles, render divergence markers, allow API key entry to be POSTed to backend.
   On load perform SELFTEST_PING to backend /ws/ping and validate response. -->
@@ -37,9 +37,16 @@ SOFTWARE.
 <body class="bg-gray-950 text-white min-h-screen">
   <div class="max-w-6xl mx-auto p-4 space-y-4">
     <h1 class="text-2xl font-bold">DivergenceBotX</h1>
-    <div class="flex items-center gap-2">
-      <input id="apikey" type="password" placeholder="Twelve Data API Key" class="px-3 py-2 rounded bg-gray-800 w-96" />
+    <div class="flex items-center gap-2 flex-wrap">
+      <input id="apikey" type="password" placeholder="Twelve Data API Key" class="px-3 py-2 rounded bg-gray-800 w-72" />
       <button id="saveKey" class="px-3 py-2 rounded bg-blue-600 hover:bg-blue-500">Save API Key</button>
+      <input id="symbol" value="EUR/USD" class="px-3 py-2 rounded bg-gray-800 w-36" />
+      <select id="tf" class="px-3 py-2 rounded bg-gray-800">
+        <option value="1min">1min</option>
+        <option value="5min">5min</option>
+        <option value="15min">15min</option>
+      </select>
+      <button id="applyCfg" class="px-3 py-2 rounded bg-emerald-600 hover:bg-emerald-500">Apply</button>
       <span id="pingStatus" class="ml-4 text-sm text-gray-400">Pinging...</span>
     </div>
     <div id="chart" class="h-[480px] w-full bg-gray-900 rounded"></div>
@@ -81,6 +88,19 @@ SOFTWARE.
       alert('Saved');
     });
 
+    document.getElementById('applyCfg').addEventListener('click', async () => {
+      const symbol = document.getElementById('symbol').value;
+      const tf = document.getElementById('tf').value;
+      await fetch('http://localhost:8000/api/stream/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol, timeframe: tf }),
+      });
+      alert('Applied. Reconnect WS to see new stream.');
+      try { ws.close(); } catch {}
+      startWS();
+    });
+
     const chartEl = document.getElementById('chart');
     const chart = LightweightCharts.createChart(chartEl, {
       layout: { background: { color: '#111827' }, textColor: '#e5e7eb' },
@@ -89,14 +109,24 @@ SOFTWARE.
     });
     const candleSeries = chart.addCandlestickSeries();
 
-    const ws = new WebSocket('ws://localhost:8000/ws/stream');
-    ws.onmessage = (ev) => {
-      try {
-        const data = JSON.parse(ev.data);
-        if (data.event === 'keepalive') return;
-        logEl.textContent += JSON.stringify(data) + '\n';
-      } catch {}
-    };
+    let ws;
+    function startWS(){
+      ws = new WebSocket('ws://localhost:8000/ws/stream');
+      ws.onmessage = (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          if (data.event === 'keepalive') return;
+          if (data.event === 'candle') {
+            const tSec = Math.floor(data.ts / 1000);
+            candleSeries.update({ time: tSec, open: data.open, high: data.high, low: data.low, close: data.close });
+            return;
+          }
+          logEl.textContent += JSON.stringify(data) + '\n';
+          logEl.scrollTop = logEl.scrollHeight;
+        } catch {}
+      };
+    }
+    startWS();
   </script>
 </body>
 </html>
