@@ -1,0 +1,102 @@
+<!-- TAG=0xD606;MODULE=FRONTEND -->
+<!-- CRC32=0xF5B5C3A6; BITS=11110101101101011100001110100110 -->
+<!-- DESCRIPTION: Single-page UI using Tailwind + lightweight-charts from CDN.
+  Must connect to backend WS, render candles, render divergence markers, allow API key entry to be POSTed to backend.
+  On load perform SELFTEST_PING to backend /ws/ping and validate response. -->
+<!-- MIT License
+
+Copyright (c) 2025
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DivergenceBotX</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body class="bg-gray-950 text-white min-h-screen">
+  <div class="max-w-6xl mx-auto p-4 space-y-4">
+    <h1 class="text-2xl font-bold">DivergenceBotX</h1>
+    <div class="flex items-center gap-2">
+      <input id="apikey" type="password" placeholder="Twelve Data API Key" class="px-3 py-2 rounded bg-gray-800 w-96" />
+      <button id="saveKey" class="px-3 py-2 rounded bg-blue-600 hover:bg-blue-500">Save API Key</button>
+      <span id="pingStatus" class="ml-4 text-sm text-gray-400">Pinging...</span>
+    </div>
+    <div id="chart" class="h-[480px] w-full bg-gray-900 rounded"></div>
+    <div>
+      <h2 class="font-semibold mb-2">Signals</h2>
+      <pre id="log" class="bg-black p-2 rounded h-48 overflow-auto"></pre>
+    </div>
+  </div>
+  <script>
+    const logEl = document.getElementById('log');
+    const pingStatus = document.getElementById('pingStatus');
+    async function ping() {
+      try {
+        const ws = new WebSocket('ws://localhost:8000/ws/ping');
+        ws.onmessage = (ev) => {
+          const data = JSON.parse(ev.data);
+          if (data.event === 'pong') {
+            pingStatus.textContent = 'Backend OK: ' + new Date(data.ts).toLocaleTimeString();
+          }
+          ws.close();
+        };
+        ws.onerror = () => {
+          pingStatus.textContent = 'Backend ping failed';
+        };
+      } catch (e) {
+        pingStatus.textContent = 'Backend ping failed';
+      }
+    }
+    ping();
+
+    document.getElementById('saveKey').addEventListener('click', async () => {
+      const key = document.getElementById('apikey').value;
+      if (!key) return;
+      await fetch('http://localhost:8000/api/apikey', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: key }),
+      });
+      alert('Saved');
+    });
+
+    const chartEl = document.getElementById('chart');
+    const chart = LightweightCharts.createChart(chartEl, {
+      layout: { background: { color: '#111827' }, textColor: '#e5e7eb' },
+      grid: { vertLines: { color: '#1f2937' }, horzLines: { color: '#1f2937' } },
+      timeScale: { timeVisible: true, secondsVisible: true },
+    });
+    const candleSeries = chart.addCandlestickSeries();
+
+    const ws = new WebSocket('ws://localhost:8000/ws/stream');
+    ws.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data.event === 'keepalive') return;
+        logEl.textContent += JSON.stringify(data) + '\n';
+      } catch {}
+    };
+  </script>
+</body>
+</html>
