@@ -1,5 +1,5 @@
 <!-- TAG=0xD606;MODULE=FRONTEND -->
-<!-- CRC32=0xDA56DB86; BITS=11011010010101101101101110000110 -->
+<!-- CRC32=0x17EF5348; BITS=00010111111011110101001101001000 -->
 <!-- DESCRIPTION: Single-page UI using Tailwind + lightweight-charts from CDN.
   Must connect to backend WS, render candles, render divergence markers, allow API key entry to be POSTed to backend.
   On load perform SELFTEST_PING to backend /ws/ping and validate response. -->
@@ -110,6 +110,7 @@ SOFTWARE.
     const candleSeries = chart.addCandlestickSeries();
 
     let ws;
+    const markers = [];
     function startWS(){
       ws = new WebSocket('ws://localhost:8000/ws/stream');
       ws.onmessage = (ev) => {
@@ -119,6 +120,22 @@ SOFTWARE.
           if (data.event === 'candle') {
             const tSec = Math.floor(data.ts / 1000);
             candleSeries.update({ time: tSec, open: data.open, high: data.high, low: data.low, close: data.close });
+            return;
+          }
+          if (typeof data.sig_bit !== 'undefined' && typeof data.ts_unix_ms !== 'undefined') {
+            const tSec = Math.floor(data.ts_unix_ms / 1000);
+            const isBuy = Number(data.sig_bit) === 1;
+            markers.push({
+              time: tSec,
+              position: isBuy ? 'belowBar' : 'aboveBar',
+              color: isBuy ? '#10b981' : '#ef4444',
+              shape: isBuy ? 'arrowUp' : 'arrowDown',
+              text: (isBuy ? 'BUY' : 'SELL') + ' ' + String(data.dtype || '') + ' (' + String(data.score || '') + ')'
+            });
+            if (markers.length > 200) markers.shift();
+            candleSeries.setMarkers(markers);
+            logEl.textContent += JSON.stringify(data) + '\n';
+            logEl.scrollTop = logEl.scrollHeight;
             return;
           }
           logEl.textContent += JSON.stringify(data) + '\n';
